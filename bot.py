@@ -22,8 +22,6 @@ TWO_FA       = os.environ.get("TWO_FA_PASSWORD", "")
 SOURCE_CHANNEL = os.environ.get("SOURCE_CHANNEL", "")
 TARGET_CHANNEL = os.environ.get("TARGET_CHANNEL", "")
 
-# تأخير بين كل رسالة بالثواني (لتجنب الحظر)
-DELAY_SECONDS = 3
 # ======================================================
 
 logging.basicConfig(
@@ -68,24 +66,6 @@ async def send_media(message):
         logger.error(f"❌ خطأ أثناء النشر: {e}")
 
 
-async def scrape_old_messages():
-    """سحب كل المحتوى القديم من القناة المصدر"""
-    logger.info("📦 جاري سحب المحتوى القديم...")
-    count = 0
-
-    async for message in client.iter_messages(SOURCE_CHANNEL, reverse=True):
-        if not is_media(message):
-            continue
-
-        logger.info(f"📤 نشر رسالة قديمة ID: {message.id}")
-        await send_media(message)
-        count += 1
-
-        # تأخير لتجنب حظر تلغرام
-        await asyncio.sleep(DELAY_SECONDS)
-
-    logger.info(f"✅ انتهى سحب المحتوى القديم — تم نشر {count} ملف")
-
 
 @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
 async def handler(event):
@@ -102,7 +82,7 @@ async def handler(event):
 async def main():
     logger.info("🚀 جاري تشغيل البوت...")
 
-    await client.start(phone=PHONE, password=lambda: TWO_FA)
+    await client.start(phone=PHONE, password=TWO_FA if TWO_FA else None)
     logger.info("✅ تم تسجيل الدخول بنجاح!")
 
     # الانضمام للقناة المصدر
@@ -112,10 +92,7 @@ async def main():
     except Exception as e:
         logger.info(f"ℹ️ {e}")
 
-    # سحب المحتوى القديم أولاً
-    await scrape_old_messages()
-
-    # بعدها يراقب الجديد
+    # يراقب الجديد فقط
     logger.info(f"👂 يراقب {SOURCE_CHANNEL} → ينشر في {TARGET_CHANNEL}")
     await client.run_until_disconnected()
 
