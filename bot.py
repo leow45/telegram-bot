@@ -1,13 +1,15 @@
 """
 Telegram Media Forwarder Bot
 يسحب الصور والفيديوهات من قناة محمية وينشرها بقناتك
-الميزات: تجنب التكرار + وضع الصمت (إيقاف/تشغيل)
+الميزات: تجنب التكرار + وضع الصمت + مخزون احتياطي
 """
 
 import asyncio
 import os
 import json
 import logging
+import random
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
@@ -23,6 +25,11 @@ TWO_FA       = os.environ.get("TWO_FA_PASSWORD", "")
 
 SOURCE_CHANNEL = os.environ.get("SOURCE_CHANNEL", "")
 TARGET_CHANNEL = os.environ.get("TARGET_CHANNEL", "")
+
+# القناة الاحتياطية (تُستخدم لو القناة المصدر صمتت يومين)
+BACKUP_CHANNEL = int(os.environ.get("BACKUP_CHANNEL", "0"))
+# كم ساعة صمت قبل النشر من الاحتياطي
+SILENCE_HOURS = int(os.environ.get("SILENCE_HOURS", "48"))
 
 # رقم حسابك الشخصي على تلغرام (لاستقبال أوامر الإيقاف/التشغيل)
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "")
@@ -41,6 +48,9 @@ client = TelegramClient("session", API_ID, API_HASH)
 
 # حالة البوت — True = يعمل، False = متوقف مؤقتاً
 is_active = True
+
+# آخر وقت نُشر فيه من القناة المصدر
+last_source_post = datetime.now(timezone.utc)
 
 
 # =================== تجنب التكرار ===================
@@ -126,7 +136,9 @@ async def handler(event):
     if not is_media(message):
         return
 
+    global last_source_post
     logger.info("🆕 ميديا جديدة وصلت!")
+    last_source_post = datetime.now(timezone.utc)
     await send_media(message)
 
 
@@ -157,6 +169,53 @@ async def bot_status(event):
 # =====================================================
 
 
+
+# =================== المخزون الاحتياطي ===================
+
+async def post_from_backup():
+    """ينشر رسالة عشوائية من القناة الاحتياطية"""
+    try:
+        # جمع كل الرسائل الميديا من القناة الاحتياطية
+        available = []
+        async for message in client.iter_messages(BACKUP_CHANNEL):
+            if is_media(message) and message.id not in posted_ids:
+                available.append(message)
+
+        if not available:
+            logger.warning("⚠️ المخزون الاحتياطي خلص!")
+            admin = ADMIN_USERNAME if ADMIN_USERNAME else "me"
+            await client.send_message(admin, "⚠️ تنبيه: المخزون الاحتياطي خلص! أضف محتوى جديد للقناة الاحتياطية.")
+            return
+
+        # اختيار رسالة عشوائية
+        message = random.choice(available)
+        logger.info(f"📦 نشر من المخزون الاحتياطي ID: {message.id}")
+        await send_media(message)
+
+    except Exception as e:
+        logger.error(f"❌ خطأ بالمخزون الاحتياطي: {e}")
+
+
+async def backup_scheduler():
+    """يفحص كل 30 دقيقة إذا القناة صامتة ويقرر النشر من الاحتياطي"""
+    # انتظر ساعة بعد التشغيل قبل ما يبدأ يفحص
+    await asyncio.sleep(3600)
+
+    while True:
+        now = datetime.now(timezone.utc)
+        hours_silent = (now - last_source_post).total_seconds() / 3600
+
+        if hours_silent >= SILENCE_HOURS and is_active:
+            logger.info(f"⏰ القناة المصدر صامتة {hours_silent:.1f} ساعة — نشر من الاحتياطي")
+            await post_from_backup()
+            # انتظر 12 ساعة قبل المرة الثانية
+            await asyncio.sleep(43200)
+        else:
+            # فحص كل 30 دقيقة
+            await asyncio.sleep(1800)
+
+# =====================================================
+
 async def main():
     logger.info("🚀 جاري تشغيل البوت...")
 
@@ -169,6 +228,9 @@ async def main():
         logger.info(f"✅ تم الانضمام لـ {SOURCE_CHANNEL}")
     except Exception as e:
         logger.info(f"ℹ️ {e}")
+
+    # تشغيل مراقب المخزون الاحتياطي بالخلفية
+    asyncio.ensure_future(backup_scheduler())
 
     logger.info(f"👂 يراقب {SOURCE_CHANNEL} → ينشر في {TARGET_CHANNEL}")
     logger.info(f"💬 أرسل 'stop' لإيقاف البوت أو 'start' لتشغيله أو 'status' لمعرفة حالته")
