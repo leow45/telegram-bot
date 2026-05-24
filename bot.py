@@ -34,6 +34,13 @@ SILENCE_HOURS = int(os.environ.get("SILENCE_HOURS", "48"))
 # رقم حسابك الشخصي على تلغرام (لاستقبال أوامر الإيقاف/التشغيل)
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "")
 
+# القناة الثانية — مصدر وهدف
+SOURCE_CHANNEL_2 = os.environ.get("SOURCE_CHANNEL_2", "@badgirl_reislin")
+TARGET_CHANNEL_2 = os.environ.get("TARGET_CHANNEL_2", "@bad_reislin")
+
+# ملف حفظ الرسائل المنشورة للقناة الثانية
+POSTED_FILE_2 = "posted_ids_2.json"
+
 # ملف حفظ الرسائل المنشورة
 POSTED_FILE = "posted_ids.json"
 # ======================================================
@@ -69,6 +76,22 @@ def save_posted_id(msg_id):
         json.dump(list(posted_ids), f)
 
 posted_ids = load_posted_ids()
+
+def load_posted_ids_2():
+    """تحميل IDs الرسائل المنشورة للقناة الثانية"""
+    if os.path.exists(POSTED_FILE_2):
+        with open(POSTED_FILE_2, "r") as f:
+            return set(json.load(f))
+    return set()
+
+def save_posted_id_2(msg_id):
+    """حفظ ID رسالة تم نشرها للقناة الثانية"""
+    posted_ids_2.add(msg_id)
+    with open(POSTED_FILE_2, "w") as f:
+        json.dump(list(posted_ids_2), f)
+
+posted_ids_2 = load_posted_ids_2()
+scrape_done = os.path.exists("scrape_done.flag")
 # =====================================================
 
 
@@ -115,6 +138,35 @@ async def send_media(message):
         logger.error(f"❌ خطأ أثناء النشر: {e}")
 
 
+async def send_media_2(message):
+    """تنزيل الميديا ونشرها بالقناة الهدف الثانية"""
+    try:
+        file_path = await client.download_media(message.media)
+        logger.info(f"⬇️ [قناة2] تم التنزيل: {file_path}")
+
+        is_video = isinstance(file_path, str) and any(
+            file_path.lower().endswith(ext)
+            for ext in [".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"]
+        )
+        await client.send_file(
+            TARGET_CHANNEL_2,
+            file_path,
+            caption="",
+            supports_streaming=is_video,
+            force_document=False
+        )
+        logger.info("✅ [قناة2] تم النشر بنجاح!")
+
+        posted_ids_2.add(message.id)
+        save_posted_id_2(message.id)
+
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+    except Exception as e:
+        logger.error(f"❌ [قناة2] خطأ أثناء النشر: {e}")
+
+
 # =================== مراقبة القناة ===================
 
 @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
@@ -140,6 +192,25 @@ async def handler(event):
     logger.info("🆕 ميديا جديدة وصلت!")
     last_source_post = datetime.now(timezone.utc)
     await send_media(message)
+
+
+@client.on(events.NewMessage(chats=SOURCE_CHANNEL_2))
+async def handler_2(event):
+    """يراقب الرسائل الجديدة من القناة الثانية"""
+    message = event.message
+
+    if not is_active:
+        return
+
+    if message.id in posted_ids_2:
+        logger.info(f"⚠️ [قناة2] رسالة {message.id} منشورة مسبقاً")
+        return
+
+    if not is_media(message):
+        return
+
+    logger.info("🆕 [قناة2] ميديا جديدة وصلت!")
+    await send_media_2(message)
 
 
 # =================== وضع الصمت ===================
@@ -228,6 +299,27 @@ async def main():
         logger.info(f"✅ تم الانضمام لـ {SOURCE_CHANNEL}")
     except Exception as e:
         logger.info(f"ℹ️ {e}")
+
+    # الانضمام للقناة الثانية
+    try:
+        await client(JoinChannelRequest(SOURCE_CHANNEL_2))
+        logger.info(f"✅ تم الانضمام لـ {SOURCE_CHANNEL_2}")
+    except Exception as e:
+        logger.info(f"ℹ️ {e}")
+
+    # نسخ المحتوى القديم من القناة الثانية (مرة وحدة فقط)
+    global scrape_done
+    if not scrape_done:
+        logger.info("📦 [قناة2] جاري نسخ المحتوى القديم...")
+        count = 0
+        async for message in client.iter_messages(SOURCE_CHANNEL_2, reverse=True):
+            if is_media(message) and message.id not in posted_ids_2:
+                await send_media_2(message)
+                count += 1
+                await asyncio.sleep(3)
+        logger.info(f"✅ [قناة2] تم نسخ {count} ملف")
+        open("scrape_done.flag", "w").write("done")
+        scrape_done = True
 
     # تشغيل مراقب المخزون الاحتياطي بالخلفية
     asyncio.ensure_future(backup_scheduler())
